@@ -20,6 +20,7 @@ package kafka.server
 import java.lang.{Long => JLong}
 import java.net.InetAddress
 import java.util
+import java.util.Collections
 
 import kafka.api.{ApiVersion, KAFKA_0_10_2_IV0}
 import kafka.cluster.Replica
@@ -404,7 +405,7 @@ class KafkaApisTest {
     )
     val updateMetadataRequest = new UpdateMetadataRequest.Builder(ApiKeys.UPDATE_METADATA.latestVersion, 0,
       0, Map.empty[TopicPartition, UpdateMetadataRequest.PartitionState].asJava, brokers.asJava).build()
-    metadataCache.updateCache(correlationId = 0, updateMetadataRequest)
+    metadataCache.updateMetadata(correlationId = 0, updateMetadataRequest)
     (plaintextListener, anotherListener)
   }
 
@@ -495,4 +496,14 @@ class KafkaApisTest {
       })
   }
 
+  private def setupBasicMetadataCache(topic: String, numPartitions: Int): Unit = {
+    val replicas = List(0.asInstanceOf[Integer]).asJava
+    val partitionState = new UpdateMetadataRequest.PartitionState(1, 0, 1, replicas, 0, replicas, Collections.emptyList())
+    val plaintextListener = ListenerName.forSecurityProtocol(SecurityProtocol.PLAINTEXT)
+    val broker = new UpdateMetadataRequest.Broker(0, Seq(new UpdateMetadataRequest.EndPoint("broker0", 9092, SecurityProtocol.PLAINTEXT, plaintextListener)).asJava, "rack")
+    val partitions = (0 until numPartitions).map(new TopicPartition(topic, _) -> partitionState).toMap
+    val updateMetadataRequest = new UpdateMetadataRequest.Builder(ApiKeys.UPDATE_METADATA.latestVersion, 0,
+      0, partitions.asJava, Set(broker).asJava).build()
+    metadataCache.updateMetadata(correlationId = 0, updateMetadataRequest)
+  }
 }
