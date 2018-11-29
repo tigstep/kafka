@@ -630,11 +630,11 @@ public enum Errors {
     LISTENER_NOT_FOUND(72, "There is no listener on the leader broker that matches the listener on which " +
             "metadata request was processed.",
             new ApiExceptionBuilder() {
-                @Override
-                public ApiException build(String message) {
-                    return new ListenerNotFoundException(message);
-                }
-            });
+        @Override
+        public ApiException build(String message) {
+            return new ListenerNotFoundException(message);
+        }
+    });
 
 
     private interface ApiExceptionBuilder {
