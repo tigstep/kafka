@@ -54,20 +54,6 @@ public abstract class Encrypt<R extends ConnectRecord<R>> implements Transformat
 
     private static final Map<Class<?>, Object> PRIMITIVE_VALUE_MAPPING = new HashMap<>();
 
-    static {
-        PRIMITIVE_VALUE_MAPPING.put(Boolean.class, Boolean.FALSE);
-        PRIMITIVE_VALUE_MAPPING.put(Byte.class, (byte) 0);
-        PRIMITIVE_VALUE_MAPPING.put(Short.class, (short) 0);
-        PRIMITIVE_VALUE_MAPPING.put(Integer.class, 0);
-        PRIMITIVE_VALUE_MAPPING.put(Long.class, 0L);
-        PRIMITIVE_VALUE_MAPPING.put(Float.class, 0f);
-        PRIMITIVE_VALUE_MAPPING.put(Double.class, 0d);
-        PRIMITIVE_VALUE_MAPPING.put(BigInteger.class, BigInteger.ZERO);
-        PRIMITIVE_VALUE_MAPPING.put(BigDecimal.class, BigDecimal.ZERO);
-        PRIMITIVE_VALUE_MAPPING.put(Date.class, new Date(0));
-        PRIMITIVE_VALUE_MAPPING.put(String.class, "");
-    }
-
     private Set<String> maskedFields;
 
     @Override
