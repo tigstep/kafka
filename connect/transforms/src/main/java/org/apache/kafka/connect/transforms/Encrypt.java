@@ -41,9 +41,7 @@ import static org.apache.kafka.connect.transforms.util.Requirements.requireStruc
 public abstract class Encrypt<R extends ConnectRecord<R>> implements Transformation<R> {
 
     public static final String OVERVIEW_DOC =
-            "Insert field(s) using attributes from the record metadata or a configured static value."
-                    + "<p/>Use the concrete transformation type designed for the record key (<code>" + Key.class.getName() + "</code>) "
-                    + "or value (<code>" + Value.class.getName() + "</code>).";
+            "Encrypt the value of a record using AWS KMS.";
 
     private interface ConfigName {
         String TOPIC_FIELD = "topic.field";
