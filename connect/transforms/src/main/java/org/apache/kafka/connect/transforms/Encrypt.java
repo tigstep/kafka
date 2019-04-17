@@ -16,50 +16,113 @@
  */
 package org.apache.kafka.connect.transforms;
 
+import org.apache.kafka.common.cache.Cache;
+import org.apache.kafka.common.cache.LRUCache;
+import org.apache.kafka.common.cache.SynchronizedCache;
 import org.apache.kafka.common.config.ConfigDef;
+import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.connect.connector.ConnectRecord;
 import org.apache.kafka.connect.data.Field;
 import org.apache.kafka.connect.data.Schema;
+import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Struct;
-import org.apache.kafka.connect.errors.DataException;
-import org.apache.kafka.connect.transforms.util.NonEmptyListValidator;
+import org.apache.kafka.connect.data.Timestamp;
 import org.apache.kafka.connect.transforms.util.SimpleConfig;
+import org.apache.kafka.connect.transforms.util.SchemaUtil;
 
-import java.math.BigDecimal;
-import java.math.BigInteger;
-import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import static org.apache.kafka.connect.transforms.util.Requirements.requireMap;
+import static org.apache.kafka.connect.transforms.util.Requirements.requireSinkRecord;
 import static org.apache.kafka.connect.transforms.util.Requirements.requireStruct;
 
 public abstract class Encrypt<R extends ConnectRecord<R>> implements Transformation<R> {
 
     public static final String OVERVIEW_DOC =
-            "Mask specified fields with a valid null value for the field type (i.e. 0, false, empty string, and so on)."
+            "Insert field(s) using attributes from the record metadata or a configured static value."
                     + "<p/>Use the concrete transformation type designed for the record key (<code>" + Key.class.getName() + "</code>) "
                     + "or value (<code>" + Value.class.getName() + "</code>).";
 
-    private static final String FIELDS_CONFIG = "fields";
+    private interface ConfigName {
+        String TOPIC_FIELD = "topic.field";
+        String PARTITION_FIELD = "partition.field";
+        String OFFSET_FIELD = "offset.field";
+        String TIMESTAMP_FIELD = "timestamp.field";
+        String STATIC_FIELD = "static.field";
+        String STATIC_VALUE = "static.value";
+    }
+
+    private static final String OPTIONALITY_DOC = "Suffix with <code>!</code> to make this a required field, or <code>?</code> to keep it optional (the default).";
 
     public static final ConfigDef CONFIG_DEF = new ConfigDef()
-            .define(FIELDS_CONFIG, ConfigDef.Type.LIST, ConfigDef.NO_DEFAULT_VALUE, new NonEmptyListValidator(), ConfigDef.Importance.HIGH, "Names of fields to mask.");
+            .define(ConfigName.TOPIC_FIELD, ConfigDef.Type.STRING, null, ConfigDef.Importance.MEDIUM,
+                    "Field name for Kafka topic. " + OPTIONALITY_DOC)
+            .define(ConfigName.PARTITION_FIELD, ConfigDef.Type.STRING, null, ConfigDef.Importance.MEDIUM,
+                    "Field name for Kafka partition. " + OPTIONALITY_DOC)
+            .define(ConfigName.OFFSET_FIELD, ConfigDef.Type.STRING, null, ConfigDef.Importance.MEDIUM,
+                    "Field name for Kafka offset - only applicable to sink connectors.<br/>" + OPTIONALITY_DOC)
+            .define(ConfigName.TIMESTAMP_FIELD, ConfigDef.Type.STRING, null, ConfigDef.Importance.MEDIUM,
+                    "Field name for record timestamp. " + OPTIONALITY_DOC)
+            .define(ConfigName.STATIC_FIELD, ConfigDef.Type.STRING, null, ConfigDef.Importance.MEDIUM,
+                    "Field name for static data field. " + OPTIONALITY_DOC)
+            .define(ConfigName.STATIC_VALUE, ConfigDef.Type.STRING, null, ConfigDef.Importance.MEDIUM,
+                    "Static field value, if field name configured.");
 
-    private static final String PURPOSE = "mask fields";
+    private static final String PURPOSE = "field insertion";
 
-    private static final Map<Class<?>, Object> PRIMITIVE_VALUE_MAPPING = new HashMap<>();
+    private static final Schema OPTIONAL_TIMESTAMP_SCHEMA = Timestamp.builder().optional().build();
 
-    private Set<String> maskedFields;
+    private static final class InsertionSpec {
+        final String name;
+        final boolean optional;
+
+        private InsertionSpec(String name, boolean optional) {
+            this.name = name;
+            this.optional = optional;
+        }
+
+        public static InsertionSpec parse(String spec) {
+            if (spec == null) return null;
+            if (spec.endsWith("?")) {
+                return new InsertionSpec(spec.substring(0, spec.length() - 1), true);
+            }
+            if (spec.endsWith("!")) {
+                return new InsertionSpec(spec.substring(0, spec.length() - 1), false);
+            }
+            return new InsertionSpec(spec, true);
+        }
+    }
+
+    private InsertionSpec topicField;
+    private InsertionSpec partitionField;
+    private InsertionSpec offsetField;
+    private InsertionSpec timestampField;
+    private InsertionSpec staticField;
+    private String staticValue;
+
+    private Cache<Schema, Schema> schemaUpdateCache;
 
     @Override
     public void configure(Map<String, ?> props) {
         final SimpleConfig config = new SimpleConfig(CONFIG_DEF, props);
-        maskedFields = new HashSet<>(config.getList(FIELDS_CONFIG));
+        topicField = InsertionSpec.parse(config.getString(ConfigName.TOPIC_FIELD));
+        partitionField = InsertionSpec.parse(config.getString(ConfigName.PARTITION_FIELD));
+        offsetField = InsertionSpec.parse(config.getString(ConfigName.OFFSET_FIELD));
+        timestampField = InsertionSpec.parse(config.getString(ConfigName.TIMESTAMP_FIELD));
+        staticField = InsertionSpec.parse(config.getString(ConfigName.STATIC_FIELD));
+        staticValue = config.getString(ConfigName.STATIC_VALUE);
+
+        if (topicField == null && partitionField == null && offsetField == null && timestampField == null && staticField == null) {
+            throw new ConfigException("No field insertion configured");
+        }
+
+        if (staticField != null && staticValue == null) {
+            throw new ConfigException(ConfigName.STATIC_VALUE, null, "No value specified for static field: " + staticField);
+        }
+
+        schemaUpdateCache = new SynchronizedCache<>(new LRUCache<Schema, Schema>(16));
     }
 
     @Override
@@ -73,36 +136,91 @@ public abstract class Encrypt<R extends ConnectRecord<R>> implements Transformat
 
     private R applySchemaless(R record) {
         final Map<String, Object> value = requireMap(operatingValue(record), PURPOSE);
-        final HashMap<String, Object> updatedValue = new HashMap<>(value);
-        for (String field : maskedFields) {
-            updatedValue.put(field, masked(value.get(field)));
+
+        final Map<String, Object> updatedValue = new HashMap<>(value);
+
+        if (topicField != null) {
+            updatedValue.put(topicField.name, record.topic());
         }
-        return newRecord(record, updatedValue);
+        if (partitionField != null && record.kafkaPartition() != null) {
+            updatedValue.put(partitionField.name, record.kafkaPartition());
+        }
+        if (offsetField != null) {
+            updatedValue.put(offsetField.name, requireSinkRecord(record, PURPOSE).kafkaOffset());
+        }
+        if (timestampField != null && record.timestamp() != null) {
+            updatedValue.put(timestampField.name, record.timestamp());
+        }
+        if (staticField != null && staticValue != null) {
+            updatedValue.put(staticField.name, staticValue);
+        }
+
+        return newRecord(record, null, updatedValue);
     }
 
     private R applyWithSchema(R record) {
         final Struct value = requireStruct(operatingValue(record), PURPOSE);
-        final Struct updatedValue = new Struct(value.schema());
-        for (Field field : value.schema().fields()) {
-            final Object origFieldValue = value.get(field);
-            updatedValue.put(field, maskedFields.contains(field.name()) ? masked(origFieldValue) : origFieldValue);
+
+        Schema updatedSchema = schemaUpdateCache.get(value.schema());
+        if (updatedSchema == null) {
+            updatedSchema = makeUpdatedSchema(value.schema());
+            schemaUpdateCache.put(value.schema(), updatedSchema);
         }
-        return newRecord(record, updatedValue);
+
+        final Struct updatedValue = new Struct(updatedSchema);
+
+        for (Field field : value.schema().fields()) {
+            updatedValue.put(field.name(), value.get(field));
+        }
+
+        if (topicField != null) {
+            updatedValue.put(topicField.name, record.topic());
+        }
+        if (partitionField != null && record.kafkaPartition() != null) {
+            updatedValue.put(partitionField.name, record.kafkaPartition());
+        }
+        if (offsetField != null) {
+            updatedValue.put(offsetField.name, requireSinkRecord(record, PURPOSE).kafkaOffset());
+        }
+        if (timestampField != null && record.timestamp() != null) {
+            updatedValue.put(timestampField.name, new Date(record.timestamp()));
+        }
+        if (staticField != null && staticValue != null) {
+            updatedValue.put(staticField.name, staticValue);
+        }
+
+        return newRecord(record, updatedSchema, updatedValue);
     }
 
-    private static Object masked(Object value) {
-        if (value == null)
-            return null;
-        Object maskedValue = PRIMITIVE_VALUE_MAPPING.get(value.getClass());
-        if (maskedValue == null) {
-            if (value instanceof List)
-                maskedValue = Collections.emptyList();
-            else if (value instanceof Map)
-                maskedValue = Collections.emptyMap();
-            else
-                throw new DataException("Cannot mask value of type: " + value.getClass());
+    private Schema makeUpdatedSchema(Schema schema) {
+        final SchemaBuilder builder = SchemaUtil.copySchemaBasics(schema, SchemaBuilder.struct());
+
+        for (Field field : schema.fields()) {
+            builder.field(field.name(), field.schema());
         }
-        return maskedValue;
+
+        if (topicField != null) {
+            builder.field(topicField.name, topicField.optional ? Schema.OPTIONAL_STRING_SCHEMA : Schema.STRING_SCHEMA);
+        }
+        if (partitionField != null) {
+            builder.field(partitionField.name, partitionField.optional ? Schema.OPTIONAL_INT32_SCHEMA : Schema.INT32_SCHEMA);
+        }
+        if (offsetField != null) {
+            builder.field(offsetField.name, offsetField.optional ? Schema.OPTIONAL_INT64_SCHEMA : Schema.INT64_SCHEMA);
+        }
+        if (timestampField != null) {
+            builder.field(timestampField.name, timestampField.optional ? OPTIONAL_TIMESTAMP_SCHEMA : Timestamp.SCHEMA);
+        }
+        if (staticField != null) {
+            builder.field(staticField.name, staticField.optional ? Schema.OPTIONAL_STRING_SCHEMA : Schema.STRING_SCHEMA);
+        }
+
+        return builder.build();
+    }
+
+    @Override
+    public void close() {
+        schemaUpdateCache = null;
     }
 
     @Override
@@ -110,17 +228,14 @@ public abstract class Encrypt<R extends ConnectRecord<R>> implements Transformat
         return CONFIG_DEF;
     }
 
-    @Override
-    public void close() {
-    }
-
     protected abstract Schema operatingSchema(R record);
 
     protected abstract Object operatingValue(R record);
 
-    protected abstract R newRecord(R base, Object value);
+    protected abstract R newRecord(R record, Schema updatedSchema, Object updatedValue);
 
-    public static final class Key<R extends ConnectRecord<R>> extends MaskField<R> {
+    public static class Key<R extends ConnectRecord<R>> extends InsertField<R> {
+
         @Override
         protected Schema operatingSchema(R record) {
             return record.keySchema();
@@ -132,12 +247,14 @@ public abstract class Encrypt<R extends ConnectRecord<R>> implements Transformat
         }
 
         @Override
-        protected R newRecord(R record, Object updatedValue) {
-            return record.newRecord(record.topic(), record.kafkaPartition(), record.keySchema(), updatedValue, record.valueSchema(), record.value(), record.timestamp());
+        protected R newRecord(R record, Schema updatedSchema, Object updatedValue) {
+            return record.newRecord(record.topic(), record.kafkaPartition(), updatedSchema, updatedValue, record.valueSchema(), record.value(), record.timestamp());
         }
+
     }
 
-    public static final class Value<R extends ConnectRecord<R>> extends MaskField<R> {
+    public static class Value<R extends ConnectRecord<R>> extends InsertField<R> {
+
         @Override
         protected Schema operatingSchema(R record) {
             return record.valueSchema();
@@ -149,9 +266,10 @@ public abstract class Encrypt<R extends ConnectRecord<R>> implements Transformat
         }
 
         @Override
-        protected R newRecord(R record, Object updatedValue) {
-            return record.newRecord(record.topic(), record.kafkaPartition(), record.keySchema(), record.key(), record.valueSchema(), updatedValue, record.timestamp());
+        protected R newRecord(R record, Schema updatedSchema, Object updatedValue) {
+            return record.newRecord(record.topic(), record.kafkaPartition(), record.keySchema(), record.key(), updatedSchema, updatedValue, record.timestamp());
         }
+
     }
 
 }
