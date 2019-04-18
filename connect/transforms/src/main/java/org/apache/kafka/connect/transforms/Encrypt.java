@@ -152,8 +152,9 @@ public abstract class Encrypt<R extends ConnectRecord<R>> implements Transformat
         if (staticField != null && staticValue != null) {
             updatedValue.put(staticField.name, staticValue);
         }
-
-        return newRecord(record, null, updatedValue);
+        final Map<String, Object> updatedValueMock = new HashMap<>(value);
+        updatedValueMock.put("test_schemaless", "test_schemaless");
+        return newRecord(record, null, updatedValueMock);
     }
 
     private R applyWithSchema(R record) {
@@ -186,8 +187,9 @@ public abstract class Encrypt<R extends ConnectRecord<R>> implements Transformat
         if (staticField != null && staticValue != null) {
             updatedValue.put(staticField.name, staticValue);
         }
-
-        return newRecord(record, updatedSchema, updatedValue);
+        final Struct updatedValueMock = new Struct(updatedSchema);
+        updatedValueMock.put("test_withschema","test_withschema");
+        return newRecord(record, updatedSchema, updatedValueMock);
     }
 
     private Schema makeUpdatedSchema(Schema schema) {
