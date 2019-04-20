@@ -30,6 +30,7 @@ import org.apache.kafka.connect.data.Timestamp;
 import org.apache.kafka.connect.transforms.util.SimpleConfig;
 import org.apache.kafka.connect.transforms.util.SchemaUtil;
 
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
@@ -43,96 +44,52 @@ public abstract class Encrypt<R extends ConnectRecord<R>> implements Transformat
     public static final String OVERVIEW_DOC =
             "Encrypt the value of a record using AWS KMS.";
 
-    private interface ConfigName {
-        String TOPIC_FIELD = "topic.field";
-        String PARTITION_FIELD = "partition.field";
-        String OFFSET_FIELD = "offset.field";
-        String TIMESTAMP_FIELD = "timestamp.field";
-        String STATIC_FIELD = "static.field";
-        String STATIC_VALUE = "static.value";
-    }
+
 
     private static final String OPTIONALITY_DOC = "Suffix with <code>!</code> to make this a required field, or <code>?</code> to keep it optional (the default).";
 
     public static final ConfigDef CONFIG_DEF = new ConfigDef()
-            .define(ConfigName.TOPIC_FIELD, ConfigDef.Type.STRING, null, ConfigDef.Importance.MEDIUM,
+            .define("topic", ConfigDef.Type.STRING, null, ConfigDef.Importance.MEDIUM,
                     "Field name for Kafka topic. " + OPTIONALITY_DOC)
-            .define(ConfigName.PARTITION_FIELD, ConfigDef.Type.STRING, null, ConfigDef.Importance.MEDIUM,
-                    "Field name for Kafka partition. " + OPTIONALITY_DOC)
-            .define(ConfigName.OFFSET_FIELD, ConfigDef.Type.STRING, null, ConfigDef.Importance.MEDIUM,
-                    "Field name for Kafka offset - only applicable to sink connectors.<br/>" + OPTIONALITY_DOC)
-            .define(ConfigName.TIMESTAMP_FIELD, ConfigDef.Type.STRING, null, ConfigDef.Importance.MEDIUM,
-                    "Field name for record timestamp. " + OPTIONALITY_DOC)
-            .define(ConfigName.STATIC_FIELD, ConfigDef.Type.STRING, null, ConfigDef.Importance.MEDIUM,
-                    "Field name for static data field. " + OPTIONALITY_DOC)
-            .define(ConfigName.STATIC_VALUE, ConfigDef.Type.STRING, null, ConfigDef.Importance.MEDIUM,
-                    "Static field value, if field name configured.");
-
-    private static final String PURPOSE = "field insertion";
-
-    private static final Schema OPTIONAL_TIMESTAMP_SCHEMA = Timestamp.builder().optional().build();
-
-    private static final class InsertionSpec {
-        final String name;
-        final boolean optional;
-
-        private InsertionSpec(String name, boolean optional) {
-            this.name = name;
-            this.optional = optional;
-        }
-
-        public static InsertionSpec parse(String spec) {
-            if (spec == null) return null;
-            if (spec.endsWith("?")) {
-                return new InsertionSpec(spec.substring(0, spec.length() - 1), true);
-            }
-            if (spec.endsWith("!")) {
-                return new InsertionSpec(spec.substring(0, spec.length() - 1), false);
-            }
-            return new InsertionSpec(spec, true);
-        }
-    }
-
-    private InsertionSpec topicField;
-    private InsertionSpec partitionField;
-    private InsertionSpec offsetField;
-    private InsertionSpec timestampField;
-    private InsertionSpec staticField;
-    private String staticValue;
-
-    private Cache<Schema, Schema> schemaUpdateCache;
-
+            ;
+    private String topic;
     @Override
     public void configure(Map<String, ?> props) {
         final SimpleConfig config = new SimpleConfig(CONFIG_DEF, props);
-        topicField = InsertionSpec.parse(config.getString(ConfigName.TOPIC_FIELD));
-        partitionField = InsertionSpec.parse(config.getString(ConfigName.PARTITION_FIELD));
-        offsetField = InsertionSpec.parse(config.getString(ConfigName.OFFSET_FIELD));
-        timestampField = InsertionSpec.parse(config.getString(ConfigName.TIMESTAMP_FIELD));
-        staticField = InsertionSpec.parse(config.getString(ConfigName.STATIC_FIELD));
-        staticValue = config.getString(ConfigName.STATIC_VALUE);
-
-        if (topicField == null && partitionField == null && offsetField == null && timestampField == null && staticField == null) {
-            throw new ConfigException("No field insertion configured");
-        }
-
-        if (staticField != null && staticValue == null) {
-            throw new ConfigException(ConfigName.STATIC_VALUE, null, "No value specified for static field: " + staticField);
-        }
-
-        schemaUpdateCache = new SynchronizedCache<>(new LRUCache<Schema, Schema>(16));
+        topic = config.getString("topic");
     }
 
     @Override
     public R apply(R record) {
-        if (operatingSchema(record) == null) {
+        /*Schema valueSchema = SchemaBuilder.struct()
+                .name("value")
+                .field("key_1", Schema.STRING_SCHEMA)
+                .field("key_2", Schema.INT8_SCHEMA)
+                .field("key_3", Schema.INT16_SCHEMA)
+                .build();*/
+        System.out.println(record.valueSchema());
+        System.out.println(record.value());
+        System.out.println(record.valueSchema().getClass());
+        System.out.println(record.value().getClass());
+        //{SSN=986119889,FIRST_NAME=Woodrow,LAST_NAME=Dudding,ACCOUNT_ID=0121819,BALANCE=0.00,ACCOUNT_TYPE=business,ADDRESS=61 Colonial St. Brooklyn NY 11201
+        Struct struct = new Struct(record.valueSchema())
+                .put("SSN","ssn")
+                .put("FIRST_NAME","first_name")
+                .put("LAST_NAME","last_name")
+                .put("ACCOUNT_ID","account_id")
+                .put("BALANCE","balance")
+                .put("ACCOUNT_TYPE","account_type")
+                .put("ADDRESS","address");
+        return newRecord(record, record.valueSchema(), struct);
+        /*if (operatingSchema(record) == null) {
             return applySchemaless(record);
         } else {
             return applyWithSchema(record);
-        }
+        }*/
     }
 
-    private R applySchemaless(R record) {
+    //No difference between schemaless records and records with schemas, so the logic is being moved to apply itself
+    /*private R applySchemaless(R record) {
         final Map<String, Object> value = requireMap(operatingValue(record), PURPOSE);
 
         final Map<String, Object> updatedValue = new HashMap<>(value);
@@ -190,9 +147,10 @@ public abstract class Encrypt<R extends ConnectRecord<R>> implements Transformat
         final Struct updatedValueMock = new Struct(updatedSchema);
         updatedValueMock.put("test_withschema","test_withschema");
         return newRecord(record, updatedSchema, updatedValueMock);
-    }
+    }*/
 
-    private Schema makeUpdatedSchema(Schema schema) {
+    //No changes to the schema for enryption, so this is not needed
+    /*private Schema makeUpdatedSchema(Schema schema) {
         final SchemaBuilder builder = SchemaUtil.copySchemaBasics(schema, SchemaBuilder.struct());
 
         for (Field field : schema.fields()) {
@@ -216,11 +174,11 @@ public abstract class Encrypt<R extends ConnectRecord<R>> implements Transformat
         }
 
         return builder.build();
-    }
+    }*/
 
     @Override
     public void close() {
-        schemaUpdateCache = null;
+        //schemaUpdateCache = null;
     }
 
     @Override
@@ -228,18 +186,20 @@ public abstract class Encrypt<R extends ConnectRecord<R>> implements Transformat
         return CONFIG_DEF;
     }
 
-    protected abstract Schema operatingSchema(R record);
+    //This is not needed for encryption, since only the value will be encrypted
+    //protected abstract Schema operatingSchema(R record);
 
     protected abstract Object operatingValue(R record);
 
     protected abstract R newRecord(R record, Schema updatedSchema, Object updatedValue);
 
-    public static class Key<R extends ConnectRecord<R>> extends InsertField<R> {
+    public static class Key<R extends ConnectRecord<R>> extends Encrypt<R> {
 
-        @Override
+        //This is not needed for encryption, since only the value will be encrypted
+        /*@Override
         protected Schema operatingSchema(R record) {
             return record.keySchema();
-        }
+        }*/
 
         @Override
         protected Object operatingValue(R record) {
@@ -253,12 +213,13 @@ public abstract class Encrypt<R extends ConnectRecord<R>> implements Transformat
 
     }
 
-    public static class Value<R extends ConnectRecord<R>> extends InsertField<R> {
+    public static class Value<R extends ConnectRecord<R>> extends Encrypt<R> {
 
-        @Override
+    //This is not needed for encryption, since only the value will be encrypted
+        /*@Override
         protected Schema operatingSchema(R record) {
             return record.valueSchema();
-        }
+        }*/
 
         @Override
         protected Object operatingValue(R record) {
